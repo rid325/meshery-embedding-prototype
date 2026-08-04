@@ -1,0 +1,16 @@
+{
+  "id": "c1162250-45db-4d39-ab67-a8dc7b302ba3",
+  "schemaVersion": "components.meshery.io/v1beta1",
+  "version": "v1.0.0",
+  "displayName": "Deployment",
+  "description": "Manages a replicated application, ensuring a specified number of pod replicas are running at any given time.",
+  "status": "enabled",
+  "model": {
+    "name": "kubernetes",
+    "version": "v1.0.0"
+  },
+  "component": {
+    "kind": "Deployment",
+    "version": "apps/v1"
+  }
+}

@@ -1,0 +1,13 @@
+{
+    "schemaVersion": "policy.meshery.io/v1alpha1",
+    "name": "edge_network_relationship",
+    "displayName": "Edge Network Relationship Policy",
+    "description": "Validates network relationships between Kubernetes components such as Service and Deployment.",
+    "model": {
+        "name": "kubernetes",
+        "version": "v1.0.0"
+    },
+    "kind": "relationship",
+    "subType": "network",
+    "rego": "package meshery\n\n# policy rules here"
+}

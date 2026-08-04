@@ -1,0 +1,16 @@
+{
+  "id": "c95586cc-8c4d-4d8f-bda4-42acd105d4fc",
+  "schemaVersion": "components.meshery.io/v1beta1",
+  "version": "v1.0.0",
+  "displayName": "Service",
+  "description": "An abstract way to expose an application running on a set of Pods as a network service.",
+  "status": "enabled",
+  "model": {
+    "name": "kubernetes",
+    "version": "v1.0.0"
+  },
+  "component": {
+    "kind": "Service",
+    "version": "v1"
+  }
+}
