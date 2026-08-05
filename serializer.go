@@ -1,6 +1,13 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+func join(fields []string) string {
+	return strings.Join(fields, ", ")
+}
 
 func SerializeForEmbedding(obj EmbeddableObject) string {
 	switch v := obj.(type) {
@@ -25,10 +32,14 @@ func serializeModel(m *Model) string {
 }
 
 func serializeComponent(c *Component) string {
-	return fmt.Sprintf(
-		"Component: %s | Kind: %s | API version: %s | Model: %s | Status: %s | Description: %s",
-		c.DisplayName, c.Component.Kind, c.Component.Version, c.Model.Name, c.Status, c.Description,
+	base := fmt.Sprintf(
+		"Component: %s | Kind: %s | API version: %s | Group: %s | Scope: %s | Model: %s | Status: %s | Description: %s",
+		c.DisplayName, c.Component.Kind, c.Component.Version, c.Component.Group, c.Component.Scope, c.Model.Name, c.Status, c.Description,
 	)
+	if len(c.Component.SpecFields) > 0 {
+		base += fmt.Sprintf(" | Spec fields: %s", join(c.Component.SpecFields))
+	}
+	return base
 }
 
 func serializeRelationship(r *Relationship) string {

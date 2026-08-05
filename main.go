@@ -57,12 +57,14 @@ func main() {
 	deployment, deploymentBytes := loadComponent("data/deployment_component.json")
 	service, serviceBytes := loadComponent("data/service_component.json")
 	rel, relBytes := loadRelationship("data/service_deployment_relationship.json")
+	inferenceService, inferenceServiceBytes := loadComponent("data/inferenceservice_component.json")
 
 	entries := []entry{
 		{&deployment, deploymentBytes},
 		{&service, serviceBytes},
 		{&rel, relBytes},
 		{&policy, policyBytes},
+		{&inferenceService, inferenceServiceBytes},
 	}
 
 	for _, e := range entries {
@@ -85,6 +87,7 @@ func main() {
 	queries := []string{
 		"Create a Kubernetes deployment exposed by a service",
 		"Run a stateless application with replicated pods",
+		"Deploy a machine learning model for inference with a predictor",
 	}
 
 	for _, query := range queries {

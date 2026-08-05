@@ -12,13 +12,16 @@ type Model struct {
 	SubCategory   string   `json:"subCategory"`
 }
 
+// Component maps to components.meshery.io/v1beta1.
+// Source distinguishes static catalog components ("catalog") from dynamically parsed CRDs ("crd").
 type Component struct {
-	ID            string         `json:"id"`
-	SchemaVersion string         `json:"schemaVersion"`
-	Version       string         `json:"version"`
-	DisplayName   string         `json:"displayName"`
-	Description   string         `json:"description"`
-	Status        string         `json:"status"`
+	ID            string        `json:"id"`
+	SchemaVersion string        `json:"schemaVersion"`
+	Version       string        `json:"version"`
+	DisplayName   string        `json:"displayName"`
+	Description   string        `json:"description"`
+	Status        string        `json:"status"`
+	Source        string        `json:"source"`
 	Model         ComponentModel `json:"model"`
 	Component     ComponentKind  `json:"component"`
 }
@@ -29,8 +32,11 @@ type ComponentModel struct {
 }
 
 type ComponentKind struct {
-	Kind    string `json:"kind"`
-	Version string `json:"version"`
+	Kind       string   `json:"kind"`
+	Version    string   `json:"version"`
+	Group      string   `json:"group"`
+	Scope      string   `json:"scope"`
+	SpecFields []string `json:"specFields"`
 }
 
 type Relationship struct {

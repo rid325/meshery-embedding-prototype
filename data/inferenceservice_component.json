@@ -1,0 +1,20 @@
+{
+  "id": "dynamic-crd-kserve-inferenceservice",
+  "schemaVersion": "components.meshery.io/v1beta1",
+  "version": "v1beta1",
+  "displayName": "InferenceService",
+  "description": "Deploys a machine learning inference service with optional predictor, transformer, and explainer components. Supports canary rollouts and multi-framework model serving.",
+  "status": "enabled",
+  "source": "crd",
+  "model": {
+    "name": "kserve",
+    "version": "v1beta1"
+  },
+  "component": {
+    "kind": "InferenceService",
+    "version": "v1beta1",
+    "group": "serving.kserve.io",
+    "scope": "Namespaced",
+    "specFields": ["predictor", "transformer", "explainer", "canary", "canaryTrafficPercent"]
+  }
+}
