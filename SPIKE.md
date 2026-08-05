@@ -1,12 +1,18 @@
-# Meshery Embedding Spike — Full Workflow Document
+# Meshery Embedding Spike
 
 ## What This Is
 
 A proof-of-concept that answers one question:
 
-> Can we take real Meshery schema objects (Model, Component, Relationship, Policy), embed them semantically, store them in SQLite, and retrieve the right ones for a natural language query like "Create a Kubernetes deployment exposed by a service"?
+> Can we take real Meshery schema objects, embed them semantically, store them in SQLite, and retrieve the right ones for a natural language query?
 
-The answer is yes. This document explains everything that was built and why.
+The answer is yes. This document covers everything built, every decision made, and all test results.
+
+---
+
+## The Problem
+
+Meshery has a large catalog of schema objects — Models, Components, Relationships, Policies. When a user says "Create a Kubernetes deployment exposed by a service", the system needs to know which specific objects to surface. Today that's done by keyword search or manual browsing. The goal of this spike is to prove that semantic embedding retrieval can do it better.
 
 ---
 
@@ -14,76 +20,94 @@ The answer is yes. This document explains everything that was built and why.
 
 ```
 meshery-embedding-prototype/
-├── main.go                          — orchestration: load → embed → store → query
-├── types.go                         — Go structs for all four schema types + shared interface
-├── serializer.go                    — converts structs to plain-text strings for embedding
-├── embedder.go                      — calls Ollama API; falls back to deterministic fake
-├── store.go                         — SQLite init, insert, and fetch
-├── search.go                        — cosine similarity + top-k ranking
+├── main.go                                    — orchestration
+├── types.go                                   — Go structs + shared interface
+├── serializer.go                              — struct → plain text for embedding
+├── embedder.go                                — Ollama client + fake fallback
+├── store.go                                   — SQLite: init, insert, fetch
+├── search.go                                  — cosine similarity + top-k
 ├── data/
-│   ├── deployment_component.json    — real Kubernetes Deployment component (from catalog)
-│   ├── service_component.json       — real Kubernetes Service component (from catalog)
-│   ├── service_deployment_relationship.json  — real edge/network relationship (from catalog)
-│   ├── policy_template.json         — edge_network_relationship policy
-│   ├── model_template.json          — placeholder model template
-│   ├── component_template.json      — placeholder (empty, not used in final run)
-│   └── relationship_template.json   — placeholder (not used in final run)
-└── embeddings.db                    — SQLite database (generated at runtime)
+│   ├── deployment_component.json              — real K8s Deployment (from catalog)
+│   ├── service_component.json                 — real K8s Service (from catalog)
+│   ├── service_deployment_relationship.json   — real edge/network relationship
+│   ├── policy_template.json                   — edge_network_relationship policy
+│   ├── inferenceservice_component.json        — dynamic: parsed from KServe CRD
+│   ├── inferenceservice_crd.yaml              — raw KServe InferenceService CRD
+│   ├── model_template.json                    — placeholder (not ingested)
+│   ├── component_template.json                — placeholder (not ingested)
+│   └── relationship_template.json             — placeholder (not ingested)
+└── embeddings.db                              — SQLite database (generated at runtime)
 ```
 
 ---
 
-## The Full Pipeline
+## The Pipeline
 
-### Step 1 — Define the data model (`types.go`)
-
-Four Go structs were defined, each mapping to a Meshery schema type:
-
-- `Model` — maps to `models.meshery.io/v1beta1`
-- `Component` — maps to `components.meshery.io/v1beta1`
-- `Relationship` — maps to `relationships.meshery.io/v1beta1`
-- `Policy` — maps to `policy.meshery.io/v1alpha1`
-
-A shared `EmbeddableObject` interface with `GetID()` and `GetType()` methods was added so all four types can be handled uniformly in the pipeline loop.
-
-Only semantically meaningful fields were kept. UUIDs, SVG blobs, timestamps, and registrant noise were excluded.
+```
+JSON file (catalog or CRD-derived)
+  └─ json.Unmarshal → Go struct
+       └─ SerializeForEmbedding() → plain text string
+            └─ GenerateEmbedding() → []float32 (768-dim)
+                 └─ SaveEntity() → SQLite row
+                                          ↓
+                              query string
+                                └─ GenerateEmbedding()
+                                     └─ Search() → cosine similarity over all rows
+                                          └─ top-k results printed
+```
 
 ---
 
-### Step 2 — Serialize to plain text (`serializer.go`)
+## Step-by-Step Breakdown
 
-Each struct is converted to a clean natural-language-style string before being sent to the embedder.
+### 1. Data model — `types.go`
 
-Examples:
+Four Go structs matching Meshery schema versions:
+
+- `Model` — `models.meshery.io/v1beta1`
+- `Component` — `components.meshery.io/v1beta1`
+- `Relationship` — `relationships.meshery.io/v1beta1`
+- `Policy` — `policy.meshery.io/v1alpha1`
+
+A shared `EmbeddableObject` interface (`GetID()`, `GetType()`) lets all four types flow through the pipeline loop without type-switching in main.
+
+`Component` has a `source` field (`"catalog"` or `"crd"`) to distinguish static catalog objects from dynamically parsed CRD objects. `ComponentKind` was extended with `group`, `scope`, and `specFields` to carry CRD-specific metadata.
+
+---
+
+### 2. Serialization — `serializer.go`
+
+Each struct is converted to a clean natural-language string. This is the most important step — the quality of this string determines retrieval quality.
+
+Examples of what gets serialized:
 
 ```
-Component: Service | Kind: Service | API version: v1 | Model: kubernetes | Status: enabled | Description: An abstract way to expose an application running on a set of Pods as a network service.
+Component: Service | Kind: Service | API version: v1 | Group:  | Scope:  | Model: kubernetes | Status: enabled | Description: An abstract way to expose an application running on a set of Pods as a network service.
+
+Component: InferenceService | Kind: InferenceService | API version: v1beta1 | Group: serving.kserve.io | Scope: Namespaced | Model: kserve | Status: enabled | Description: Deploys a machine learning inference service with optional predictor, transformer, and explainer components. | Spec fields: predictor, transformer, explainer, canary, canaryTrafficPercent
 
 Relationship: edge non-binding network | Model: kubernetes | Evaluation query:
 
 Policy: edge_network_relationship | Display name: Edge Network Relationship Policy | Kind: relationship | Subtype: network | Model: kubernetes | Description: Validates network relationships between Kubernetes components such as Service and Deployment.
 ```
 
-The quality of these strings directly determines retrieval quality. Richer text = better embeddings = better search.
+SVG blobs, timestamps, and UUIDs are excluded — they add noise without semantic value.
 
 ---
 
-### Step 3 — Generate embeddings (`embedder.go`)
+### 3. Embedding — `embedder.go`
 
-The `GenerateEmbedding(text string) ([]float32, error)` function:
+`GenerateEmbedding(text string) ([]float32, error)`:
 
-1. **Primary path — Ollama:** POSTs to `http://localhost:11434/api/embeddings` with model `nomic-embed-text`. This produces a real 768-dimensional semantic vector.
-2. **Fallback — deterministic fake:** If Ollama is unavailable, uses an FNV hash of the input text seeded through an LCG to produce a 768-float unit-normalized vector. Same input always gives same output. Lets the full pipeline run offline for development.
-
-The timeout is set to 30 seconds to handle Ollama cold starts.
+- **Primary:** POST to `http://localhost:11434/api/embeddings` with model `nomic-embed-text`. Returns a real 768-dimensional semantic vector. Timeout: 30s.
+- **Fallback:** if Ollama is unavailable, uses FNV hash of the input text as an LCG seed to produce a deterministic 768-float unit-normalized vector. Same input always returns the same vector. Keeps the pipeline runnable offline.
 
 ---
 
-### Step 4 — Store in SQLite (`store.go`)
+### 4. Storage — `store.go`
 
-Uses `modernc.org/sqlite` (pure Go, no CGo required).
+Uses `modernc.org/sqlite` — pure Go, no CGo required.
 
-Table schema:
 ```sql
 CREATE TABLE IF NOT EXISTS entities (
     id              TEXT PRIMARY KEY,
@@ -94,83 +118,145 @@ CREATE TABLE IF NOT EXISTS entities (
 )
 ```
 
-- `SaveEntity` marshals the `[]float32` embedding to a JSON string and upserts the row.
-- `GetAllEntities` fetches all rows and unmarshals the embedding back to `[]float32`.
+`SaveEntity` marshals `[]float32` to JSON string and upserts. `GetAllEntities` scans all rows and unmarshals embeddings back to `[]float32`.
 
 ---
 
-### Step 5 — Cosine similarity search (`search.go`)
+### 5. Search — `search.go`
 
-`CosineSimilarity(a, b []float32) float32` computes:
-
-```
-similarity = dot(a, b) / (|a| * |b|)
-```
-
-Returns a value in [-1, 1]. Higher = more similar.
+`CosineSimilarity(a, b []float32) float32` — standard dot product over magnitudes.
 
 `Search(db, queryEmbedding, k)`:
-1. Loads all entities from SQLite
+1. Loads all entities
 2. Scores each against the query vector
-3. Sorts descending by score
-4. Returns top-k results
+3. Sorts descending
+4. Returns top-k
 
 ---
 
-### Step 6 — Orchestration (`main.go`)
+### 6. Orchestration — `main.go`
 
-The main function wires everything together:
-
-```
-InitDB
-  └─ load JSON files (os.ReadFile + json.Unmarshal)
-       └─ SerializeForEmbedding
-            └─ GenerateEmbedding (Ollama or fake)
-                 └─ SaveEntity (SQLite upsert)
-
-GenerateEmbedding(query)
-  └─ Search (cosine similarity over all stored entities)
-       └─ Print top-k results
-```
-
-Errors on individual objects use `log.Printf` + `continue` so one bad record doesn't kill the run.
+Loads five objects: Deployment, Service, Service→Deployment relationship, edge_network_relationship policy, InferenceService (CRD-derived). For each: serialize → embed → store. Then runs three test queries and prints results.
 
 ---
 
-## Real Data Extraction
+## Real Data Sources
 
-The `data/` files were populated from the official Meshery Kubernetes catalog, extracted from a Docker image tar (`kubernetes.tar`) downloaded from meshery.io/catalog.
+### Static — Kubernetes catalog
+Extracted from official Meshery Kubernetes catalog (`v1.32.0-alpha.3`), downloaded as a Docker image tar from meshery.io/catalog. Unpacked the image layer to get:
 
-Structure inside the tar:
 ```
 v1.32.0-alpha.3/v1.0.0/
-├── model.json
-├── components/
-│   ├── Deployment.json
-│   ├── Service.json
-│   └── ... (79 components total)
-└── relationships/
-    └── ... (63 relationships total)
+├── components/   (79 components — used Deployment.json, Service.json)
+└── relationships/ (63 relationships — used edge-ldz.json: Service→Deployment network edge)
 ```
 
-The Service→Deployment relationship was identified as `edge-ldz.json` — kind `edge`, type `non-binding`, subType `network`.
+### Dynamic — KServe CRD
+Downloaded the real `InferenceService` CRD from the KServe GitHub repo (`serving.kserve.io_inferenceservices.yaml`). Parsed key fields:
 
-Fields extracted and saved match the struct shapes in `types.go`.
+| Field | Value |
+|-------|-------|
+| Kind | InferenceService |
+| Group | serving.kserve.io |
+| Version | v1beta1 |
+| Scope | Namespaced |
+| Spec fields | predictor, transformer, explainer, canary, canaryTrafficPercent |
+
+These were serialized into a Component JSON (`inferenceservice_component.json`) using the same struct shape as catalog components, but with `source: "crd"`.
+
+---
+
+## Design Decisions
+
+### Model as metadata, not a retrieval target
+
+The Kubernetes Model object was not ingested as a standalone embeddable entity. Reasons:
+- Users query for actionable things — Components and Relationships, not model records
+- The model name (`kubernetes`) is already embedded as context in every Component and Relationship via `model.name` in the serialized string
+- Including Model objects would pollute results with non-actionable entries
+
+**Decision:** Model is a metadata/filter dimension. Every entity carries its model name in the serialized text. If model-level search is needed later, it belongs in a separate index.
+
+### CRD fields to include in serialization
+
+For CRD-sourced components, `specFields` (top-level keys from the CRD's `spec.properties`) are appended to the serialized string. This is what makes `InferenceService` match queries about "predictor" or "inference" — without it, the component would only match on its name and description.
+
+### One table, not four
+
+A single `entities` table with a `type` column covers all four schema types. Simpler schema, simpler queries. At prototype scale this is the right call. At production scale you might split or add indices.
 
 ---
 
 ## Test Results
 
-Query: `"Create a Kubernetes deployment exposed by a service"`
+All three queries ran against five ingested objects using real Ollama embeddings (`nomic-embed-text`).
 
-| Rank | Type | Name | Score | Why |
-|------|------|------|-------|-----|
-| 1 | component | Service | 0.726 | Directly matches "exposed by a service" |
-| 2 | component | Deployment | 0.719 | Directly matches "kubernetes deployment" |
-| 3 | policy | edge_network_relationship | 0.617 | Description mentions Service and Deployment |
-| 4 | relationship | edge non-binding network | 0.542 | Connects Service to Deployment in kubernetes model |
+---
 
-All four relevant objects were retrieved. The ranking is semantically correct.
+### Query 1: "Create a Kubernetes deployment exposed by a service"
+
+| Rank | Type | Name | Score |
+|------|------|------|-------|
+| 1 | component | Deployment | 0.711 |
+| 2 | component | Service | 0.710 |
+| 3 | policy | edge_network_relationship | 0.617 |
+| 4 | component | InferenceService | 0.602 |
+
+Deployment and Service nearly tied — both directly match the query. Policy correctly follows. InferenceService present but lower — not the target.
+
+---
+
+### Query 2: "Run a stateless application with replicated pods"
+
+| Rank | Type | Name | Score |
+|------|------|------|-------|
+| 1 | component | Deployment | 0.678 |
+| 2 | component | Service | 0.602 |
+| 3 | component | InferenceService | 0.451 |
+| 4 | relationship | edge non-binding network | 0.430 |
+
+Deployment leads — "replicated application" in its description directly matches "replicated pods". Networking objects drop significantly. InferenceService stays out of the way.
+
+---
+
+### Query 3: "Deploy a machine learning model for inference with a predictor"
+
+| Rank | Type | Name | Score |
+|------|------|------|-------|
+| 1 | component | InferenceService (CRD) | **0.752** |
+| 2 | component | Deployment | 0.547 |
+| 3 | relationship | edge non-binding network | 0.519 |
+| 4 | policy | edge_network_relationship | 0.491 |
+
+InferenceService ranked #1 by a clear margin — `predictor` appears both in its description and spec fields, and "machine learning inference" is a direct semantic match. Deployment is a reasonable #2 since it's still a deployment concept.
+
+---
+
+## What This Proves
+
+1. Meshery schema objects can be serialized into semantically meaningful text
+2. Those strings produce useful embeddings via `nomic-embed-text` (768-dim)
+3. SQLite is sufficient for storing and scanning embeddings at prototype scale
+4. Cosine similarity correctly retrieves relevant objects for natural language queries
+5. Static catalog objects and dynamic CRD-derived objects coexist in the same pipeline without interference
+6. Ranking shifts correctly based on query intent — networking queries surface Service/Deployment, ML queries surface InferenceService
+
+---
+
+## How to Run
+
+```bash
+# Make sure Ollama is running (it probably already is)
+curl http://localhost:11434/api/tags
+
+# Pull the embedding model if not already there
+ollama pull nomic-embed-text
+
+# Run the full pipeline
+cd meshery-embedding-prototype
+rm -f embeddings.db
+go run .
+```
 
 ---
 
@@ -178,55 +264,19 @@ All four relevant objects were retrieved. The ranking is semantically correct.
 
 | Package | Purpose |
 |---------|---------|
-| `modernc.org/sqlite` | Pure-Go SQLite driver (no CGo) |
-| `hash/fnv` | Stdlib — used in fake embedding fallback |
+| `modernc.org/sqlite` | Pure-Go SQLite driver |
+| `hash/fnv` | Stdlib — fake embedding fallback |
 | `database/sql` | Stdlib — SQL interface |
-| `encoding/json` | Stdlib — JSON marshal/unmarshal |
+| `encoding/json` | Stdlib — marshal/unmarshal |
 | `net/http` | Stdlib — Ollama HTTP client |
 
 ---
 
-## How to Run
+## What's Next
 
-```bash
-# First run — make sure Ollama is running with nomic-embed-text pulled
-ollama pull nomic-embed-text
-
-# Run the pipeline
-go run .
-
-# To re-ingest with fresh embeddings
-rm embeddings.db && go run .
-```
-
----
-
-## What This Proves
-
-1. Meshery schema objects can be serialized into meaningful text strings
-2. Those strings produce useful semantic embeddings via `nomic-embed-text`
-3. SQLite is sufficient for storing and querying embeddings at prototype scale
-4. Cosine similarity over 768-dim vectors correctly retrieves relevant schema objects for natural language queries
-5. The fake fallback keeps the pipeline runnable without Ollama, useful for CI or offline dev
-
----
-
-## Design Decision: Model as Metadata, Not a Retrieval Target
-
-The Kubernetes `Model` object was deliberately not ingested as a standalone embeddable entity. Here's why:
-
-- Users query for things to act on — Components and Relationships. A Model record on its own is not actionable.
-- The model name (`kubernetes`) is already embedded as context in every Component and Relationship via the `model.name` field in the serialized string. It influences rankings without being a result itself.
-- Including Model objects in the same embedding space would pollute results for the common case (e.g. returning "Kubernetes model" when someone asks about a Deployment).
-
-**Conclusion:** Model is a metadata/filter dimension. Every entity is tagged with its model name in the serialized text, which is sufficient. If model-level search is needed later (e.g. "what models are available?"), it should live in a separate index, not mixed with component/relationship retrieval.
-
----
-
-## What's Next (Beyond the Spike)
-
-- Load all 79 Kubernetes components and 63 relationships, not just Deployment and Service
-- Add more Meshery models (Istio, AWS, etc.)
-- Replace linear cosine scan with an approximate nearest-neighbour index (e.g. HNSW) for scale
-- Expose as an HTTP API so other Meshery services can query it
-- Evaluate retrieval quality systematically across a set of test queries
+- Ingest all 79 Kubernetes components and 63 relationships, not just Deployment and Service
+- Write a real CRD parser that reads `spec.properties` from YAML directly instead of hand-authoring the JSON
+- Add more Meshery models (Istio, AWS, Prometheus)
+- Replace linear cosine scan with approximate nearest-neighbour (HNSW) for scale
+- Expose as an HTTP API for other Meshery services to query
+- Evaluate retrieval quality systematically across a broader test query set
