@@ -2,6 +2,8 @@
 
 A working prototype that proves Meshery schema objects (Components, Relationships, Policies) can be serialized, embedded semantically, stored in SQLite, and retrieved accurately using natural language queries.
 
+Built as part of LFX Mentorship exploration for Meshery's AI/RAG pipeline.
+
 ## How to Run
 
 ```bash
